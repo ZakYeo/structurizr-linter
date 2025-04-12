@@ -16,10 +16,14 @@
   "author": "",
   "license": "ISC",
   "devDependencies": {
+    "@types/moo": "^0.5.10",
     "@types/node": "^22.14.1",
     "prettier": "^3.5.3",
     "ts-node": "^10.9.2",
     "typescript": "^5.8.3"
   },
-  "type": "module"
+  "type": "module",
+  "dependencies": {
+    "moo": "^0.5.2"
+  }
 }
