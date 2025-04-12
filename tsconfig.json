@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",                        // Modern JS target (Node 18+ supports this)
+    "module": "ESNext",                        // Use latest ES modules
+    "moduleResolution": "node",                // Helps with resolving modern npm packages
+    "outDir": "dist",
+    "rootDir": "src",
+    "esModuleInterop": true,                   // Allow default imports from CommonJS
+    "forceConsistentCasingInFileNames": true,
+    "strict": true,                            // Enables all strict type-checking options
+    "skipLibCheck": true,                      // Speeds up builds by skipping type checks in node_modules
+    "resolveJsonModule": true,                 // Allows importing .json files
+    "declaration": true                        // Generates .d.ts files if you're publishing a lib
+  },
+  "include": ["src"]
+}
+
