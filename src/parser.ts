@@ -1,6 +1,13 @@
 // src/parser.ts
 import type { Token } from "moo";
-import type { ASTNode, WorkspaceNode } from "./ast";
+import type {
+  ASTNode,
+  WorkspaceNode,
+  StyleElementNode,
+  StyleProperty,
+  IncludeStatement,
+  AutoLayoutStatement,
+} from "./ast";
 
 /**
  * Parse a list of tokens into an AST array.
@@ -43,6 +50,29 @@ export function parse(tokens: Token[]): ASTNode[] {
     return token;
   }
 
+  /**
+   * Expect an ident token (with optional specific value).
+   * e.g. expectIdent() or expectIdent("styles").
+   * Throws if not found.
+   */
+  function expectIdent(expectedValue?: string): Token {
+    skipWhitespace();
+    const token = next();
+    if (!token || token.type !== "ident") {
+      throw new Error(
+        `Expected token of type "ident" (value=${expectedValue || "any"}), got ${
+          token?.type
+        } at line ${token?.line}`
+      );
+    }
+    if (expectedValue && token.value !== expectedValue) {
+      throw new Error(
+        `Expected ident "${expectedValue}", but got "${token.value}" at line ${token.line}`
+      );
+    }
+    return token;
+  }
+
   // ------------------------------------------------------
   // Parse functions for known blocks
   // ------------------------------------------------------
@@ -53,7 +83,7 @@ export function parse(tokens: Token[]): ASTNode[] {
    */
   function parseWorkspaceBlock(): WorkspaceNode {
     // We already know we've seen "workspace" from the caller, so:
-    expect("ident"); // e.g. 'workspace'
+    expectIdent("workspace"); // e.g. 'workspace'
     const name = expect("string").value.replace(/"/g, "");
     const description = expect("string").value.replace(/"/g, "");
     expect("lbrace");
@@ -93,7 +123,7 @@ export function parse(tokens: Token[]): ASTNode[] {
    * Returns a Model node with its statements (Person, SoftwareSystem, Relationship).
    */
   function parseModelBlock(): ASTNode {
-    expect("ident"); // should be 'model'
+    expectIdent("model");
     expect("lbrace");
 
     const body: ASTNode[] = [];
@@ -169,25 +199,163 @@ export function parse(tokens: Token[]): ASTNode[] {
     };
   }
 
-  /**
-   * Parse a `views { ... }` block.
-   * Currently just skipping everything inside.
+  /** 
+   * Parse `element "Person" { background #08427b ... }`
    */
-  function parseViewsBlock(): ASTNode {
-    expect("ident"); // should be 'views'
+  function parseStyleElement(): StyleElementNode {
+    expectIdent("element");
+    const selector = expect("string").value.replace(/"/g, "");
     expect("lbrace");
+
+    const properties: StyleProperty[] = [];
 
     while (true) {
       skipWhitespace();
       const t = peek();
       if (!t || t.type === "rbrace") break;
-      next(); // skip for now
+
+      // e.g. background #08427b
+      if (t.type === "ident") {
+        const propName = t.value; // e.g. "background"
+        next(); // consume propName
+        skipWhitespace();
+
+        const valueToken = peek();
+        if (!valueToken) break;
+
+        // might be ident, hex, string, etc. For your DSL we expect hex
+        if (
+          valueToken.type === "hex" ||
+          valueToken.type === "ident" ||
+          valueToken.type === "string"
+        ) {
+          // store raw .value, e.g. "#08427b"
+          properties.push({ name: propName, value: valueToken.value });
+          next(); // consume
+        } else {
+          // skip unknown
+          next();
+        }
+      } else {
+        next(); // skip unknown line
+      }
+    }
+
+    expect("rbrace");
+
+    return {
+      type: "StyleElement",
+      selector,
+      properties,
+    };
+  }
+
+  /**
+   * Parse a `styles { ... }` block.
+   */
+  function parseStylesBlock(): ASTNode {
+    expectIdent("styles");
+    expect("lbrace");
+
+    const elements: StyleElementNode[] = [];
+
+    while (true) {
+      skipWhitespace();
+      const t = peek();
+      if (!t || t.type === "rbrace") break;
+
+      if (t.type === "ident" && t.value === "element") {
+        elements.push(parseStyleElement());
+      } else {
+        next(); // skip unknown lines
+      }
+    }
+
+    expect("rbrace");
+
+    return {
+      type: "Styles",
+      elements,
+    };
+  }
+
+  /**
+   * Parse `systemContext softwareSystem { ... }`
+   */
+  function parseSystemContextBlock(): ASTNode {
+    expectIdent("systemContext");
+    skipWhitespace();
+    const systemNameToken = expect("ident"); // e.g. "softwareSystem"
+    expect("lbrace");
+
+    const statements: Array<IncludeStatement | AutoLayoutStatement> = [];
+
+    while (true) {
+      skipWhitespace();
+      const t = peek();
+      if (!t || t.type === "rbrace") break;
+
+      if (t.type === "ident" && t.value === "include") {
+        next(); // consume 'include'
+        skipWhitespace();
+        const starOrIdent = peek();
+        if (!starOrIdent) break;
+
+        // For example: `include *`
+        const what = starOrIdent.value;
+        next(); // consume it
+        statements.push({ type: "IncludeStatement", what });
+      } else if (t.type === "ident" && t.value === "autolayout") {
+        next(); // consume 'autolayout'
+        skipWhitespace();
+        const directionToken = peek();
+        if (!directionToken) break;
+
+        const direction = directionToken.value; // e.g. 'lr'
+        next(); // consume
+        statements.push({ type: "AutoLayoutStatement", direction });
+      } else {
+        // skip unknown lines
+        next();
+      }
+    }
+
+    expect("rbrace");
+
+    return {
+      type: "SystemContext",
+      system: systemNameToken.value,
+      statements,
+    };
+  }
+
+  /**
+   * Parse a `views { ... }` block, containing `systemContext` and `styles` sub-blocks.
+   */
+  function parseViewsBlock(): ASTNode {
+    expectIdent("views");
+    expect("lbrace");
+
+    const body: ASTNode[] = [];
+    while (true) {
+      skipWhitespace();
+      const t = peek();
+      if (!t || t.type === "rbrace") break;
+
+      if (t.type === "ident" && t.value === "systemContext") {
+        body.push(parseSystemContextBlock());
+      } else if (t.type === "ident" && t.value === "styles") {
+        body.push(parseStylesBlock());
+      } else {
+        // skip unknown lines in views
+        next();
+      }
     }
 
     expect("rbrace");
     return {
       type: "Views",
-      body: [],
+      body,
     };
   }
 
@@ -201,8 +369,7 @@ export function parse(tokens: Token[]): ASTNode[] {
     if (!token) break;
 
     if (token.type === "ident" && token.value === "workspace") {
-      // We haven't consumed 'workspace' ident yet,
-      // because parseWorkspaceBlock expects to see it:
+      // parseWorkspaceBlock expects to see 'workspace'
       const workspaceNode = parseWorkspaceBlock();
       nodes.push(workspaceNode);
     } else {
