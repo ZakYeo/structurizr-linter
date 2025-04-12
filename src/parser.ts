@@ -1,34 +1,59 @@
 // src/parser.ts
 import type { Token } from "moo";
-import { lexer } from "./tokenizer";
 import type { ASTNode, WorkspaceNode } from "./ast";
 
-
-// src/parser.ts
-
+/**
+ * Parse a list of tokens into an AST array.
+ * Top-level: find `workspace` blocks or skip unknown tokens.
+ */
 export function parse(tokens: Token[]): ASTNode[] {
   const nodes: ASTNode[] = [];
   let i = 0;
 
-  function peek() { return tokens[i]; }
-  function next() { return tokens[i++]; }
-  function skipWhitespace() {
+  // ------------------------------------------------------
+  // Basic token utilities
+  // ------------------------------------------------------
+
+  function peek(): Token | undefined {
+    return tokens[i];
+  }
+
+  function next(): Token | undefined {
+    return tokens[i++];
+  }
+
+  function skipWhitespace(): void {
     while (peek()?.type === "ws" || peek()?.type === "newline") {
       next();
     }
   }
+
+  /**
+   * Expect a token of a specific type.
+   * Throws if the next token doesn't match.
+   */
   function expect(type: string): Token {
     skipWhitespace();
     const token = next();
     if (!token || token.type !== type) {
-      throw new Error(`Expected token of type "${type}", but got "${token?.type}" at line ${token?.line}`);
+      throw new Error(
+        `Expected token of type "${type}", but got "${token?.type}" at line ${token?.line}`
+      );
     }
     return token;
   }
 
-  // 1) A helper to parse the entire workspace block
+  // ------------------------------------------------------
+  // Parse functions for known blocks
+  // ------------------------------------------------------
+
+  /**
+   * Parse a `workspace "Name" "Description" { ... }` block.
+   * Returns a WorkspaceNode with nested AST.
+   */
   function parseWorkspaceBlock(): WorkspaceNode {
-    expect("ident"); // we already know it's "workspace"
+    // We already know we've seen "workspace" from the caller, so:
+    expect("ident"); // e.g. 'workspace'
     const name = expect("string").value.replace(/"/g, "");
     const description = expect("string").value.replace(/"/g, "");
     expect("lbrace");
@@ -37,18 +62,18 @@ export function parse(tokens: Token[]): ASTNode[] {
     while (true) {
       skipWhitespace();
       const t = peek();
+      // Stop if end of tokens or we see a '}'
       if (!t || t.type === "rbrace") break;
 
-      // Look for known blocks/keywords inside the workspace
+      // Known sub-blocks:
       if (t.type === "ident" && t.value === "model") {
         const modelNode = parseModelBlock();
         body.push(modelNode);
       } else if (t.type === "ident" && t.value === "views") {
-        // parseViewsBlock() – you’d implement similarly
         const viewsNode = parseViewsBlock();
         body.push(viewsNode);
       } else {
-        // skip unknown tokens for now
+        // Skip anything else
         next();
       }
     }
@@ -63,52 +88,76 @@ export function parse(tokens: Token[]): ASTNode[] {
     };
   }
 
-  // 2) A helper to parse `model { ... }`
+  /**
+   * Parse a `model { ... }` block.
+   * Returns a Model node with its statements (Person, SoftwareSystem, Relationship).
+   */
   function parseModelBlock(): ASTNode {
-    expect("ident"); // 'model'
+    expect("ident"); // should be 'model'
     expect("lbrace");
 
     const body: ASTNode[] = [];
-
     while (true) {
       skipWhitespace();
       const token = peek();
+
+      // Stop if end of tokens or a '}'
       if (!token || token.type === "rbrace") break;
 
+      // If we see an identifier, it might be
+      // "user = person..." or "user -> softwareSystem..."
       if (token.type === "ident") {
         const name = token.value;
-        next(); // consume the identifier (like `user`)
+        next(); // consume the identifier
 
         skipWhitespace();
 
         const nextToken = peek();
         if (nextToken?.type === "equals") {
-          // user = person "..." "..."
+          // e.g. "user = person "User" "Desc""
           next(); // consume '='
           skipWhitespace();
+
           const typeIdent = expect("ident").value;
           const label = expect("string").value.replace(/"/g, "");
           const description = expect("string").value.replace(/"/g, "");
 
           if (typeIdent === "person") {
-            body.push({ type: "Person", name, label, description });
+            body.push({
+              type: "Person",
+              name,
+              label,
+              description,
+            });
           } else if (typeIdent === "softwareSystem") {
-            body.push({ type: "SoftwareSystem", name, label, description });
+            body.push({
+              type: "SoftwareSystem",
+              name,
+              label,
+              description,
+            });
           } else {
             console.warn(`⚠️ Unknown model type: ${typeIdent}`);
           }
         } else if (nextToken?.type === "arrow") {
-          // user -> softwareSystem "..."
+          // e.g. "user -> softwareSystem "Uses""
           next(); // consume '->'
           const target = expect("ident").value;
-          const description = expect("string").value.replace(/"/g, "");
-          body.push({ type: "Relationship", source: name, target, description });
+          const relationshipDescription = expect("string").value.replace(/"/g, "");
+
+          body.push({
+            type: "Relationship",
+            source: name,
+            target,
+            description: relationshipDescription,
+          });
         } else {
           console.warn(`⚠️ Unexpected token after ident: ${nextToken?.type}`);
           next();
         }
       } else {
-        next(); // skip unexpected tokens
+        // Skip anything else in the model block
+        next();
       }
     }
 
@@ -120,13 +169,14 @@ export function parse(tokens: Token[]): ASTNode[] {
     };
   }
 
-  // 3) A helper to parse `views { ... }`
+  /**
+   * Parse a `views { ... }` block.
+   * Currently just skipping everything inside.
+   */
   function parseViewsBlock(): ASTNode {
-    expect("ident"); // 'views'
+    expect("ident"); // should be 'views'
     expect("lbrace");
 
-    // We won't detail the entire parse logic – similar structure
-    // parse possible 'systemContext softwareSystem { ... }', 'styles { ... }', etc.
     while (true) {
       skipWhitespace();
       const t = peek();
@@ -135,21 +185,28 @@ export function parse(tokens: Token[]): ASTNode[] {
     }
 
     expect("rbrace");
-    return { type: "Views", body: [] }; // placeholder
+    return {
+      type: "Views",
+      body: [],
+    };
   }
 
-  // 4) Our main parse loop: parse top-level statements
+  // ------------------------------------------------------
+  // Main parse loop
+  // ------------------------------------------------------
+
   while (i < tokens.length) {
     skipWhitespace();
     const token = peek();
     if (!token) break;
 
     if (token.type === "ident" && token.value === "workspace") {
-      //next(); // consume the 'workspace' ident
+      // We haven't consumed 'workspace' ident yet,
+      // because parseWorkspaceBlock expects to see it:
       const workspaceNode = parseWorkspaceBlock();
       nodes.push(workspaceNode);
     } else {
-      // skip unknown top-level tokens
+      // Skip unknown top-level tokens
       next();
     }
   }
